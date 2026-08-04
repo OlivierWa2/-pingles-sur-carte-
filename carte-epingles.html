@@ -160,6 +160,408 @@
   .popup-name{ font-size:15px; font-weight:800; margin-bottom:4px; }
   .popup-info{ font-size:13px; color:var(--text-dim); white-space:pre-wrap; }
   .popup-empty{ font-size:13px; color:var(--text-dim); font-style:italic; }
+  .popup-delete{
+    margin-top:12px; width:100%; border:1px solid rgba(226,96,79,0.35);
+    background:rgba(226,96,79,0.12); color:var(--danger);
+    border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700;
+    font-family:inherit; cursor:pointer; letter-spacing:0.02em;
+  }
+  .popup-delete:active{ background:rgba(226,96,79,0.25); }
+
+  .pin-marker{ display:flex; flex-direction:column; align-items:center; }
+  .pin-marker .badge{
+    width:32px; height:32px; border-radius:50% 50% 50% 0;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 3px 8px rgba(0,0,0,0.5);
+    transform: rotate(-45deg);
+  }
+  .pin-marker .badge span{
+    transform: rotate(45deg);
+    font-size:11px; font-weight:800; color:#0F1316;
+    font-family: ui-monospace, "SF Mono", monospace; letter-spacing:0.02em;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="topbar">
+  <div class="brand">Carte <b>Épingles</b></div>
+  <button class="fab" id="addPinBtn" aria-label="Ajouter une épingle">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/>
+      <circle cx="12" cy="10" r="2.4"/>
+    </svg>
+  </button>
+</div>
+
+<div class="place-banner" id="placeBanner">Déplace et zoome la carte pour positionner <b id="placeName"></b></div>
+<div class="reticle" id="reticle">
+  <div class="pin"></div>
+  <div class="shadow"></div>
+</div>
+<div class="place-actions" id="placeActions">
+  <button class="btn btn-secondary" id="cancelPlaceBtn">Annuler</button>
+  <button class="btn btn-primary" id="confirmPlaceBtn">Valider la position</button>
+</div>
+
+<!-- Step 1 : identity sheet -->
+<div class="overlay" id="identityOverlay">
+  <div class="sheet">
+    <h2>Nouvelle épingle</h2>
+    <p class="sub">Renseigne les informations avant de la positionner sur la carte.</p>
+    <div class="field">
+      <label for="nameInput">Nom ou pseudonyme</label>
+      <input type="text" id="nameInput" placeholder="Ex. Alex_92" maxlength="60">
+    </div>
+    <div class="field">
+      <label for="infoInput">Autres renseignements</label>
+      <textarea id="infoInput" rows="3" placeholder="Détails, notes, contexte..." maxlength="500"></textarea>
+    </div>
+    <div class="row">
+      <button class="btn btn-secondary" id="identityCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="identityValidateBtn">Valider</button>
+    </div>
+  </div>
+</div>
+
+<!-- Step 3 : customize pin -->
+<div class="overlay" id="customizeOverlay">
+  <div class="sheet">
+    <h2>Personnaliser l'épingle</h2>
+    <p class="sub">Choisis une couleur et des initiales (2 lettres).</p>
+    <div class="field">
+      <label for="initialsInput">Initiales</label>
+      <input type="text" id="initialsInput" class="initials-input" maxlength="2" placeholder="AB">
+    </div>
+    <div class="field">
+      <label>Couleur</label>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div class="row">
+      <button class="btn btn-secondary" id="customizeCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="customizeValidateBtn">Valider</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- Map setup (Esri World Imagery - free satellite tiles, no API key) ----------
+const map = L.map('map', { zoomControl:false, attributionControl:true, worldCopyJump:true })
+  .setView([48.8566, 2.3522], 5);
+
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+}).addTo(map);
+
+L.control.zoom({ position:'bottomright' }).addTo(map);
+
+// ---------- State ----------
+let pendingIdentity = null; // {name, info}
+let pendingLatLng = null;
+const COLORS = ['#F2A93B','#3FA7A0','#E2604F','#7B8CDE','#E0C568','#5FB878'];
+let selectedColor = COLORS[0];
+let markers = []; // {id, lat, lng, name, info, initials, color}
+
+// ---------- Storage ----------
+async function loadPins(){
+  try{
+    const res = await window.storage.get('pins', false);
+    if(res && res.value){
+      markers = JSON.parse(res.value);
+      markers.forEach(renderMarker);
+    }
+  }catch(e){ /* no pins yet */ }
+}
+async function savePins(){
+  try{ await window.storage.set('pins', JSON.stringify(markers), false); }
+  catch(e){ console.error('Erreur de sauvegarde', e); }
+}
+
+// ---------- Marker rendering ----------
+function renderMarker(m){
+  const icon = L.divIcon({
+    className:'',
+    html:`<div class="pin-marker"><div class="badge" style="background:${m.color}"><span>${m.initials}</span></div></div>`,
+    iconSize:[32,40], iconAnchor:[16,38], popupAnchor:[0,-38]
+  });
+  const marker = L.marker([m.lat, m.lng], { icon }).addTo(map);
+  const infoHtml = m.info && m.info.trim()
+    ? `<div class="popup-info">${escapeHtml(m.info)}</div>`
+    : `<div class="popup-empty">Aucun renseignement complémentaire</div>`;
+  marker.bindPopup(
+    `<div class="popup-name">${escapeHtml(m.name)}</div>${infoHtml}` +
+    `<button class="popup-delete" data-id="${m.id}">Supprimer l'épingle</button>`
+  );
+  m._marker = marker;
+}
+
+// Delete a pin by id (with confirmation), used from popup button clicks
+function deleteMarker(id){
+  const idx = markers.findIndex(x => x.id === id);
+  if(idx === -1) return;
+  const ok = window.confirm(`Supprimer l'épingle "${markers[idx].name}" ?`);
+  if(!ok) return;
+  map.removeLayer(markers[idx]._marker);
+  markers.splice(idx, 1);
+  savePins();
+}
+
+// Event delegation: catch clicks on any "Supprimer" button inside popups
+map.on('popupopen', (e) => {
+  const el = e.popup.getElement();
+  if(!el) return;
+  const btn = el.querySelector('.popup-delete');
+  if(btn){
+    btn.addEventListener('click', () => {
+      deleteMarker(btn.getAttribute('data-id'));
+      map.closePopup();
+    });
+  }
+});
+function escapeHtml(str){
+  const d = document.createElement('div'); d.innerText = str; return d.innerHTML;
+}
+
+// ---------- Swatches ----------
+const swatchesEl = document.getElementById('swatches');
+COLORS.forEach((c,i)=>{
+  const el = document.createElement('div');
+  el.className = 'swatch' + (i===0 ? ' selected':'');
+  el.style.background = c;
+  el.addEventListener('click', ()=>{
+    selectedColor = c;
+    document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('selected'));
+    el.classList.add('selected');
+  });
+  swatchesEl.appendChild(el);
+});
+
+// ---------- UI elements ----------
+const identityOverlay = document.getElementById('identityOverlay');
+const customizeOverlay = document.getElementById('customizeOverlay');
+const reticle = document.getElementById('reticle');
+const placeBanner = document.getElementById('placeBanner');
+const placeName = document.getElementById('placeName');
+const placeActions = document.getElementById('placeActions');
+const nameInput = document.getElementById('nameInput');
+const infoInput = document.getElementById('infoInput');
+const initialsInput = document.getElementById('initialsInput');
+
+// Step 0 -> 1 : open identity sheet
+document.getElementById('addPinBtn').addEventListener('click', ()=>{
+  nameInput.value=''; infoInput.value='';
+  identityOverlay.classList.add('active');
+  setTimeout(()=>nameInput.focus(), 200);
+});
+document.getElementById('identityCancelBtn').addEventListener('click', ()=>{
+  identityOverlay.classList.remove('active');
+});
+
+// Step 1 -> 2 : validate identity, enter placing mode
+document.getElementById('identityValidateBtn').addEventListener('click', ()=>{
+  const name = nameInput.value.trim();
+  if(!name){ nameInput.focus(); nameInput.style.borderColor = 'var(--danger)'; return; }
+  pendingIdentity = { name, info: infoInput.value.trim() };
+  identityOverlay.classList.remove('active');
+  enterPlacingMode();
+});
+
+function enterPlacingMode(){
+  placeName.textContent = pendingIdentity.name;
+  reticle.classList.add('active');
+  placeBanner.classList.add('active');
+  placeActions.classList.add('active');
+}
+function exitPlacingMode(){
+  reticle.classList.remove('active');
+  placeBanner.classList.remove('active');
+  placeActions.classList.remove('active');
+}
+
+document.getElementById('cancelPlaceBtn').addEventListener('click', ()=>{
+  exitPlacingMode();
+  pendingIdentity = null;
+});
+
+// Step 2 -> 3 : confirm position, open customize sheet
+document.getElementById('confirmPlaceBtn').addEventListener('click', ()=>{
+  const c = map.getCenter();
+  pendingLatLng = { lat:c.lat, lng:c.lng };
+  exitPlacingMode();
+  initialsInput.value = (pendingIdentity.name.match(/[A-Za-zÀ-ÿ]/g) || []).slice(0,2).join('').toUpperCase();
+  selectedColor = COLORS[0];
+  document.querySelectorAll('.swatch').forEach((s,i)=>s.classList.toggle('selected', i===0));
+  customizeOverlay.classList.add('active');
+  setTimeout(()=>initialsInput.focus(), 200);
+});
+
+document.getElementById('customizeCancelBtn').addEventListener('click', ()=>{
+  customizeOverlay.classList.remove('active');
+  pendingIdentity = null; pendingLatLng = null;
+});
+
+// Step 3 -> done : create the pin
+document.getElementById('customizeValidateBtn').addEventListener('click', ()=>{
+  let initials = initialsInput.value.trim().toUpperCase();
+  if(!initials){ initials = '??'; }
+  initials = initials.slice(0,2);
+  const m = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+    lat: pendingLatLng.lat, lng: pendingLatLng.lng,
+    name: pendingIdentity.name, info: pendingIdentity.info,
+    initials, color: selectedColor
+  };
+  markers.push(m);
+  renderMarker(m);
+  savePins();
+  customizeOverlay.classList.remove('active');
+  pendingIdentity = null; pendingLatLng = null;
+});
+
+initialsInput.addEventListener('input', ()=>{
+  initialsInput.value = initialsInput.value.toUpperCase().slice(0,2);
+});
+
+// ---------- Init ----------
+loadPins();
+if(navigator.geolocation){
+  navigator.geolocation.getCurrentPosition(
+    pos => map.setView([pos.coords.latitude, pos.coords.longitude], 12),
+    () => {} // silent fallback, keep default view
+  );
+}
+</script>
+</body>
+</html>
+    position:absolute; top:0; left:0; right:0;
+    padding: max(14px, env(safe-area-inset-top)) 14px 0 14px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    pointer-events:none; z-index:500;
+  }
+  .brand{
+    pointer-events:none;
+    background:var(--panel-glass); backdrop-filter: blur(8px);
+    border:1px solid var(--line); border-radius:12px;
+    padding:8px 14px; font-size:13px; letter-spacing:0.06em; text-transform:uppercase;
+    color:var(--text-dim); font-weight:600;
+  }
+  .brand b{ color:var(--text); font-weight:800; letter-spacing:0.02em; }
+
+  .fab{
+    pointer-events:auto;
+    width:50px; height:50px; border-radius:50%;
+    background: var(--amber); color:#1a1200;
+    border:none; display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.15) inset;
+    cursor:pointer; transition: transform .15s ease;
+  }
+  .fab:active{ transform: scale(0.92); }
+  .fab svg{ width:24px; height:24px; }
+
+  /* ---- placing mode ---- */
+  .reticle{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-100%);
+    pointer-events:none; z-index:400; display:none;
+  }
+  .reticle.active{ display:block; }
+  .reticle .pin{
+    width:34px; height:34px; border-radius:50% 50% 50% 0;
+    background:var(--amber); transform: rotate(-45deg);
+    box-shadow:0 4px 10px rgba(0,0,0,0.5);
+    display:flex; align-items:center; justify-content:center;
+    animation: drop .35s ease;
+  }
+  .reticle .pin::after{
+    content:''; width:12px; height:12px; border-radius:50%;
+    background:var(--ink);
+  }
+  .reticle .shadow{
+    width:16px; height:6px; border-radius:50%;
+    background:rgba(0,0,0,0.4); margin: 2px auto 0;
+  }
+  @keyframes drop{ from{ transform: rotate(-45deg) translateY(-14px); opacity:0;} to{ transform: rotate(-45deg) translateY(0); opacity:1;} }
+
+  .place-banner{
+    position:absolute; left:50%; top: max(70px, calc(env(safe-area-inset-top) + 70px));
+    transform:translateX(-50%);
+    background:var(--panel-glass); backdrop-filter: blur(8px);
+    border:1px solid var(--line); border-radius:12px;
+    padding:9px 16px; font-size:13px; color:var(--text-dim);
+    z-index:450; display:none; text-align:center; max-width:80vw;
+  }
+  .place-banner.active{ display:block; }
+  .place-banner b{ color:var(--text); }
+
+  .place-actions{
+    position:absolute; left:0; right:0; bottom:0;
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+    display:none; gap:10px; z-index:450;
+    background: linear-gradient(to top, rgba(15,19,22,0.95), rgba(15,19,22,0));
+    padding-top:50px;
+  }
+  .place-actions.active{ display:flex; }
+  .btn{
+    flex:1; border:none; border-radius:12px; padding:14px 16px;
+    font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;
+  }
+  .btn-primary{ background:var(--amber); color:#1a1200; }
+  .btn-secondary{ background:transparent; color:var(--text-dim); border:1px solid var(--line); }
+  .btn-primary:active, .btn-secondary:active{ opacity:0.75; }
+
+  /* ---- modal / sheet ---- */
+  .overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    display:none; align-items:flex-end; justify-content:center;
+    z-index:900;
+  }
+  .overlay.active{ display:flex; }
+  .sheet{
+    width:100%; max-width:480px;
+    background:var(--panel); border-radius:20px 20px 0 0;
+    border:1px solid var(--line); border-bottom:none;
+    padding: 22px 20px max(22px, env(safe-area-inset-bottom));
+    animation: rise .25s ease;
+  }
+  @keyframes rise{ from{ transform:translateY(30px); opacity:0;} to{ transform:translateY(0); opacity:1;} }
+  .sheet h2{ margin:0 0 4px; font-size:18px; letter-spacing:0.01em; }
+  .sheet .sub{ margin:0 0 18px; font-size:13px; color:var(--text-dim); }
+  .field{ margin-bottom:14px; }
+  .field label{ display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.06em; }
+  .field input, .field textarea{
+    width:100%; background:#0F1316; border:1px solid var(--line); border-radius:10px;
+    color:var(--text); padding:12px 12px; font-size:15px; font-family:inherit;
+    resize:vertical;
+  }
+  .field input:focus, .field textarea:focus{ outline:none; border-color:var(--amber); }
+  .row{ display:flex; gap:10px; margin-top:18px; }
+
+  /* initials input */
+  .initials-input{
+    text-align:center; font-size:22px; font-weight:800; letter-spacing:0.2em;
+    text-transform:uppercase; font-family: ui-monospace, "SF Mono", monospace;
+  }
+
+  /* color swatches */
+  .swatches{ display:flex; gap:10px; flex-wrap:wrap; }
+  .swatch{
+    width:38px; height:38px; border-radius:50%; cursor:pointer;
+    border:2px solid transparent; display:flex; align-items:center; justify-content:center;
+  }
+  .swatch.selected{ border-color:#fff; }
+
+  /* popup styling override */
+  .leaflet-popup-content-wrapper{
+    background:var(--panel); color:var(--text); border-radius:14px;
+    border:1px solid var(--line);
+  }
+  .leaflet-popup-tip{ background:var(--panel); }
+  .leaflet-popup-content{ margin:14px 16px; min-width:180px; }
+  .popup-name{ font-size:15px; font-weight:800; margin-bottom:4px; }
+  .popup-info{ font-size:13px; color:var(--text-dim); white-space:pre-wrap; }
+  .popup-empty{ font-size:13px; color:var(--text-dim); font-style:italic; }
 
   .pin-marker{ display:flex; flex-direction:column; align-items:center; }
   .pin-marker .badge{

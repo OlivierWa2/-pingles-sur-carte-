@@ -1,1 +1,907 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<script>
+  window.onerror = function(msg, url, line, col, error){
+    var d = document.createElement('div');
+    d.setAttribute('style','position:fixed;top:0;left:0;right:0;background:#E2604F;color:#fff;padding:12px;font-family:monospace;font-size:12px;z-index:999999;white-space:pre-wrap;line-height:1.4;');
+    d.textContent = 'ERREUR JS : ' + msg + '  (ligne ' + line + ')';
+    document.documentElement.appendChild(d);
+  };
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Carte Épingles</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0F1316">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Épingles">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  :root{
+    --ink:#0F1316;
+    --panel:#161B1F;
+    --panel-glass: rgba(22,27,31,0.88);
+    --line: rgba(237,239,242,0.10);
+    --text:#EDEFF2;
+    --text-dim:#9AA4AB;
+    --amber:#F2A93B;
+    --amber-dim:#8a611f;
+    --teal:#3FA7A0;
+    --danger:#E2604F;
+    --radius:16px;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:var(--ink); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    overflow:hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #map{ position:absolute; inset:0; background:#0b0d0f; }
+  .leaflet-control-zoom{ display:none; }
+
+  /* ---- landing ---- */
+  .landing{
+    position:fixed; inset:0; z-index:2000; background:var(--ink);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:24px; text-align:center;
+  }
+  .landing.hidden{ display:none; }
+  .landing h1{ font-size:22px; margin:0 0 6px; }
+  .landing p.sub{ color:var(--text-dim); font-size:14px; margin:0 0 32px; max-width:320px; }
+  .landing-choices{ display:flex; flex-direction:column; gap:14px; width:100%; max-width:340px; }
+  .choice-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    padding:20px; text-align:left; cursor:pointer;
+  }
+  .choice-card:active{ opacity:0.8; }
+  .choice-card h3{ margin:0 0 4px; font-size:16px; }
+  .choice-card p{ margin:0; font-size:13px; color:var(--text-dim); }
+  .choice-card.create h3{ color:var(--amber); }
+  .choice-card.join h3{ color:var(--teal); }
+
+  .landing-error{ color:var(--danger); font-size:13px; margin-top:14px; min-height:16px; }
+
+  /* ---- top bar ---- */
+  .topbar{
+    position:absolute; top:0; left:0; right:0;
+    padding: max(14px, env(safe-area-inset-top)) 14px 0 14px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    pointer-events:none; z-index:500;
+  }
+  .brand{
+    pointer-events:auto; cursor:pointer;
+    background:var(--panel-glass); backdrop-filter: blur(8px);
+    border:1px solid var(--line); border-radius:12px;
+    padding:8px 14px; font-size:13px; letter-spacing:0.02em;
+    color:var(--text-dim); font-weight:600; max-width:60vw;
+  }
+  .brand b{ color:var(--text); font-weight:800; display:block; font-size:14px; }
+  .brand .code-tag{ font-family: ui-monospace, monospace; letter-spacing:0.08em; color:var(--amber); }
+
+  .fab{
+    pointer-events:auto;
+    width:50px; height:50px; border-radius:50%;
+    background: var(--amber); color:#1a1200;
+    border:none; display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.15) inset;
+    cursor:pointer; transition: transform .15s ease; flex-shrink:0;
+  }
+  .fab:active{ transform: scale(0.92); }
+  .fab svg{ width:24px; height:24px; }
+
+  /* ---- placing mode ---- */
+  .reticle{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-100%);
+    pointer-events:none; z-index:400; display:none;
+  }
+  .reticle.active{ display:block; }
+  .reticle .pin{
+    width:34px; height:34px; border-radius:50% 50% 50% 0;
+    background:var(--amber); transform: rotate(-45deg);
+    box-shadow:0 4px 10px rgba(0,0,0,0.5);
+    display:flex; align-items:center; justify-content:center;
+    animation: drop .35s ease;
+  }
+  .reticle .pin::after{
+    content:''; width:12px; height:12px; border-radius:50%;
+    background:var(--ink);
+  }
+  .reticle .shadow{
+    width:16px; height:6px; border-radius:50%;
+    background:rgba(0,0,0,0.4); margin: 2px auto 0;
+  }
+  @keyframes drop{ from{ transform: rotate(-45deg) translateY(-14px); opacity:0;} to{ transform: rotate(-45deg) translateY(0); opacity:1;} }
+
+  .place-banner{
+    position:absolute; left:50%; top: max(70px, calc(env(safe-area-inset-top) + 70px));
+    transform:translateX(-50%);
+    background:var(--panel-glass); backdrop-filter: blur(8px);
+    border:1px solid var(--line); border-radius:12px;
+    padding:9px 16px; font-size:13px; color:var(--text-dim);
+    z-index:450; display:none; text-align:center; max-width:80vw;
+  }
+  .place-banner.active{ display:block; }
+  .place-banner b{ color:var(--text); }
+
+  .place-actions{
+    position:absolute; left:0; right:0; bottom:0;
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+    display:none; gap:10px; z-index:450;
+    background: linear-gradient(to top, rgba(15,19,22,0.95), rgba(15,19,22,0));
+    padding-top:50px;
+  }
+  .place-actions.active{ display:flex; }
+  .btn{
+    flex:1; border:none; border-radius:12px; padding:14px 16px;
+    font-size:15px; font-weight:700; cursor:pointer; font-family:inherit;
+  }
+  .btn-primary{ background:var(--amber); color:#1a1200; }
+  .btn-secondary{ background:transparent; color:var(--text-dim); border:1px solid var(--line); }
+  .btn-danger{ background:rgba(226,96,79,0.14); color:var(--danger); border:1px solid rgba(226,96,79,0.35); }
+  .btn-primary:active, .btn-secondary:active, .btn-danger:active{ opacity:0.75; }
+  .btn:disabled{ opacity:0.5; cursor:default; }
+
+  /* ---- modal / sheet ---- */
+  .overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    display:none; align-items:flex-end; justify-content:center;
+    z-index:2100;
+  }
+  .overlay.active{ display:flex; }
+  .sheet{
+    width:100%; max-width:480px;
+    background:var(--panel); border-radius:20px 20px 0 0;
+    border:1px solid var(--line); border-bottom:none;
+    padding: 22px 20px max(22px, env(safe-area-inset-bottom));
+    animation: rise .25s ease;
+  }
+  @keyframes rise{ from{ transform:translateY(30px); opacity:0;} to{ transform:translateY(0); opacity:1;} }
+  .sheet h2{ margin:0 0 4px; font-size:18px; letter-spacing:0.01em; }
+  .sheet .sub{ margin:0 0 18px; font-size:13px; color:var(--text-dim); }
+  .field{ margin-bottom:14px; }
+  .field label{ display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.06em; }
+  .field input, .field textarea{
+    width:100%; background:#0F1316; border:1px solid var(--line); border-radius:10px;
+    color:var(--text); padding:12px 12px; font-size:15px; font-family:inherit;
+    resize:vertical;
+  }
+  .field input:focus, .field textarea:focus{ outline:none; border-color:var(--amber); }
+  .row{ display:flex; gap:10px; margin-top:18px; }
+
+  .initials-input{
+    text-align:center; font-size:22px; font-weight:800; letter-spacing:0.2em;
+    text-transform:uppercase; font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .code-input{
+    text-align:center; font-size:24px; font-weight:800; letter-spacing:0.3em;
+    text-transform:uppercase; font-family: ui-monospace, "SF Mono", monospace;
+  }
+
+  .swatches{ display:flex; gap:10px; flex-wrap:wrap; }
+  .swatch{
+    width:38px; height:38px; border-radius:50%; cursor:pointer;
+    border:2px solid transparent; display:flex; align-items:center; justify-content:center;
+  }
+  .swatch.selected{ border-color:#fff; }
+
+  .share-code-box{
+    background:#0F1316; border:1px dashed var(--line); border-radius:12px;
+    padding:16px; text-align:center; margin-bottom:14px;
+  }
+  .share-code-box .code{
+    font-family: ui-monospace, monospace; font-size:28px; font-weight:800;
+    letter-spacing:0.2em; color:var(--amber); margin-bottom:8px;
+  }
+  .share-code-box .hint{ font-size:12px; color:var(--text-dim); }
+  .copy-btn{
+    margin-top:10px; background:var(--panel); border:1px solid var(--line); color:var(--text);
+    border-radius:9px; padding:8px 14px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit;
+  }
+
+  .leaflet-popup-content-wrapper{
+    background:var(--panel); color:var(--text); border-radius:14px;
+    border:1px solid var(--line);
+  }
+  .leaflet-popup-tip{ background:var(--panel); }
+  .leaflet-popup-content{ margin:14px 16px; min-width:180px; }
+  .popup-name{ font-size:15px; font-weight:800; margin-bottom:4px; }
+  .popup-info{ font-size:13px; color:var(--text-dim); white-space:pre-wrap; }
+  .popup-empty{ font-size:13px; color:var(--text-dim); font-style:italic; }
+  .popup-delete{
+    margin-top:12px; width:100%; border:1px solid rgba(226,96,79,0.35);
+    background:rgba(226,96,79,0.12); color:var(--danger);
+    border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700;
+    font-family:inherit; cursor:pointer; letter-spacing:0.02em;
+  }
+  .popup-delete:active{ background:rgba(226,96,79,0.25); }
+  .popup-edit{
+    margin-top:8px; width:100%; border:1px solid rgba(63,167,160,0.35);
+    background:rgba(63,167,160,0.12); color:var(--teal);
+    border-radius:9px; padding:9px 10px; font-size:12px; font-weight:700;
+    font-family:inherit; cursor:pointer; letter-spacing:0.02em;
+  }
+  .popup-edit:active{ background:rgba(63,167,160,0.25); }
+
+  .icon-grid{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  .icon-choice{
+    width:100%; aspect-ratio:1; border-radius:10px; cursor:pointer;
+    background:#0F1316; border:2px solid var(--line);
+    display:flex; align-items:center; justify-content:center; font-size:19px;
+  }
+  .icon-choice.selected{ border-color:var(--amber); background:rgba(242,169,59,0.12); }
+  .icon-choice.none-choice{ font-size:10px; color:var(--text-dim); font-weight:700; text-transform:uppercase; letter-spacing:0.02em; }
+
+  .reposition-link{
+    display:inline-block; margin-top:8px; font-size:12px; color:var(--teal);
+    background:none; border:none; font-family:inherit; cursor:pointer; text-decoration:underline; padding:0;
+  }
+
+  .pin-marker{ display:flex; flex-direction:column; align-items:center; }
+  .pin-marker .badge{
+    width:32px; height:32px; border-radius:50% 50% 50% 0;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 3px 8px rgba(0,0,0,0.5);
+    transform: rotate(-45deg);
+  }
+  .pin-marker .badge span{
+    transform: rotate(45deg);
+    font-size:11px; font-weight:800; color:#0F1316;
+    font-family: ui-monospace, "SF Mono", monospace; letter-spacing:0.02em;
+  }
+
+  .loading-dot{
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    color:var(--text-dim); font-size:13px; z-index:2100;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Landing screen -->
+<div class="landing" id="landing">
+  <h1>Carte Épingles</h1>
+  <p class="sub">Crée une carte partagée pour ton groupe, ou rejoins-en une existante avec un code.</p>
+  <div class="landing-choices">
+    <div class="choice-card create" id="showCreateBtn">
+      <h3>+ Créer une carte</h3>
+      <p>Démarre une nouvelle carte partagée et obtiens un code à donner à d'autres personnes.</p>
+    </div>
+    <div class="choice-card join" id="showJoinBtn">
+      <h3>Rejoindre une carte</h3>
+      <p>Tu as déjà un code ? Entre-le pour accéder à la carte partagée.</p>
+    </div>
+  </div>
+  <div class="landing-error" id="landingError"></div>
+</div>
+
+<!-- Create map sheet -->
+<div class="overlay" id="createOverlay">
+  <div class="sheet">
+    <h2>Créer une carte</h2>
+    <p class="sub">Donne un nom à ta carte partagée.</p>
+    <div class="field">
+      <label for="mapNameInput">Nom de la carte</label>
+      <input type="text" id="mapNameInput" placeholder="Ex. Randonnée entre amis" maxlength="60">
+    </div>
+    <div class="row">
+      <button class="btn btn-secondary" id="createCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="createConfirmBtn">Créer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Join map sheet -->
+<div class="overlay" id="joinOverlay">
+  <div class="sheet">
+    <h2>Rejoindre une carte</h2>
+    <p class="sub">Entre le code à 6 caractères qu'on t'a partagé.</p>
+    <div class="field">
+      <input type="text" id="codeInput" class="code-input" maxlength="6" placeholder="AB12CD">
+    </div>
+    <div class="landing-error" id="joinError"></div>
+    <div class="row">
+      <button class="btn btn-secondary" id="joinCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="joinConfirmBtn">Rejoindre</button>
+    </div>
+  </div>
+</div>
+
+<!-- Share / map info sheet (shown right after creation, and via brand tap) -->
+<div class="overlay" id="shareOverlay">
+  <div class="sheet">
+    <h2 id="shareTitle">Carte créée</h2>
+    <p class="sub">Partage ce code ou ce lien avec les personnes que tu veux inviter.</p>
+    <div class="share-code-box">
+      <div class="code" id="shareCode">------</div>
+      <div class="hint">Code d'accès</div>
+      <button class="copy-btn" id="copyCodeBtn">Copier le code</button>
+      <button class="copy-btn" id="copyLinkBtn">Copier le lien d'invitation</button>
+    </div>
+    <div class="row">
+      <button class="btn btn-danger" id="leaveMapBtn">Changer de carte</button>
+      <button class="btn btn-primary" id="shareCloseBtn">Continuer</button>
+    </div>
+  </div>
+</div>
+
+<div class="topbar" id="topbar" style="display:none;">
+  <div class="brand" id="brandBtn"><b id="mapNameLabel">Carte</b><span class="code-tag" id="mapCodeLabel"></span></div>
+  <button class="fab" id="addPinBtn" aria-label="Ajouter une épingle">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/>
+      <circle cx="12" cy="10" r="2.4"/>
+    </svg>
+  </button>
+</div>
+
+<div class="place-banner" id="placeBanner">Déplace et zoome la carte pour positionner <b id="placeName"></b></div>
+<div class="reticle" id="reticle">
+  <div class="pin"></div>
+  <div class="shadow"></div>
+</div>
+<div class="place-actions" id="placeActions">
+  <button class="btn btn-secondary" id="cancelPlaceBtn">Annuler</button>
+  <button class="btn btn-primary" id="confirmPlaceBtn">Valider la position</button>
+</div>
+
+<!-- Step 1 : identity sheet -->
+<div class="overlay" id="identityOverlay">
+  <div class="sheet">
+    <h2 id="identityTitle">Nouvelle épingle</h2>
+    <p class="sub">Renseigne les informations avant de la positionner sur la carte.</p>
+    <div class="field">
+      <label for="nameInput">Nom ou pseudonyme</label>
+      <input type="text" id="nameInput" placeholder="Ex. Alex_92" maxlength="60">
+    </div>
+    <div class="field">
+      <label for="infoInput">Autres renseignements</label>
+      <textarea id="infoInput" rows="3" placeholder="Détails, notes, contexte..." maxlength="500"></textarea>
+    </div>
+    <div class="row">
+      <button class="btn btn-secondary" id="identityCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="identityValidateBtn">Valider</button>
+    </div>
+  </div>
+</div>
+
+<!-- Step 3 : customize pin -->
+<div class="overlay" id="customizeOverlay">
+  <div class="sheet">
+    <h2 id="customizeTitle">Personnaliser l'épingle</h2>
+    <p class="sub">Choisis une couleur, des initiales, et éventuellement une icône.</p>
+    <div class="field">
+      <label for="initialsInput">Initiales</label>
+      <input type="text" id="initialsInput" class="initials-input" maxlength="2" placeholder="AB">
+    </div>
+    <div class="field">
+      <label>Couleur</label>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div class="field">
+      <label>Icône (optionnel, remplace les initiales)</label>
+      <div class="icon-grid" id="iconGrid"></div>
+    </div>
+    <button class="reposition-link" id="repositionBtn" style="display:none;">Changer l'emplacement sur la carte</button>
+    <div class="row">
+      <button class="btn btn-secondary" id="customizeCancelBtn">Annuler</button>
+      <button class="btn btn-primary" id="customizeValidateBtn">Valider</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ FIREBASE CONFIG ============
+   Remplace les valeurs ci-dessous par celles de TON projet Firebase
+   (Console Firebase > Paramètres du projet > Vos applications > SDK config)
+*/
+const firebaseConfig = {
+  apiKey: "AIzaSyBVC_foIatOkwyVOqQEM4nLa6uFPZA8wZc",
+  authDomain: "carte-epingles.firebaseapp.com",
+  databaseURL: "https://carte-epingles-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "carte-epingles",
+  storageBucket: "carte-epingles.firebasestorage.app",
+  messagingSenderId: "78716491628",
+  appId: "1:78716491628:web:b8cadf451c53ec116e0549"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ---------- Map setup (Esri World Imagery - free satellite tiles, no API key) ----------
+const map = L.map('map', { zoomControl:false, attributionControl:true, worldCopyJump:true })
+  .setView([48.8566, 2.3522], 5);
+
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+}).addTo(map);
+
+// Calques de repères (routes + noms de villes/rues) façon vue "hybride"
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19, opacity: 0.9
+}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19
+}).addTo(map);
+
+L.control.zoom({ position:'bottomright' }).addTo(map);
+
+// ---------- State ----------
+let pendingIdentity = null;
+let pendingLatLng = null;
+const COLORS = ['#F2A93B','#3FA7A0','#E2604F','#7B8CDE','#E0C568','#5FB878'];
+const ICONS = ['📍','🏠','⭐','❤️','⚠️','🚩','🏕️','🚗','🍴','📷','⛳','🎯','🔧','🌳','🅿️'];
+let selectedColor = COLORS[0];
+let selectedIcon = null;
+let editingId = null;
+let placingForEdit = false;
+let markers = []; // {id, lat, lng, name, info, initials, color, _marker}
+let currentCode = null;
+let currentMapName = null;
+
+// ---------- Code generation ----------
+function generateCode(){
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sans caractères ambigus
+  let code = '';
+  for(let i=0;i<6;i++) code += chars[Math.floor(Math.random()*chars.length)];
+  return code;
+}
+
+// ---------- Marker rendering ----------
+function renderMarker(m){
+  const glyph = m.icon ? m.icon : escapeHtml(m.initials);
+  const icon = L.divIcon({
+    className:'',
+    html:`<div class="pin-marker"><div class="badge" style="background:${m.color}"><span>${glyph}</span></div></div>`,
+    iconSize:[32,40], iconAnchor:[16,38], popupAnchor:[0,-38]
+  });
+  const marker = L.marker([m.lat, m.lng], { icon }).addTo(map);
+  const infoHtml = m.info && m.info.trim()
+    ? `<div class="popup-info">${escapeHtml(m.info)}</div>`
+    : `<div class="popup-empty">Aucun renseignement complémentaire</div>`;
+  marker.bindPopup(
+    `<div class="popup-name">${escapeHtml(m.name)}</div>${infoHtml}` +
+    `<button class="popup-edit" data-id="${m.id}">Modifier l'épingle</button>` +
+    `<button class="popup-delete" data-id="${m.id}">Supprimer l'épingle</button>`
+  );
+  m._marker = marker;
+}
+function escapeHtml(str){
+  const d = document.createElement('div'); d.innerText = str || ''; return d.innerHTML;
+}
+
+function clearAllMarkers(){
+  markers.forEach(m => { if(m._marker) map.removeLayer(m._marker); });
+  markers = [];
+}
+
+function deleteMarker(id){
+  const m = markers.find(x => x.id === id);
+  if(!m) return;
+  const ok = window.confirm(`Supprimer l'épingle "${m.name}" ?`);
+  if(!ok) return;
+  db.ref('maps/' + currentCode + '/pins/' + id).remove()
+    .catch(e => alert("Erreur lors de la suppression : " + e.message));
+  // le retrait visuel se fait via le listener temps réel
+}
+
+function startEditPin(id){
+  const m = markers.find(x => x.id === id);
+  if(!m) return;
+  editingId = id;
+  pendingIdentity = { name: m.name, info: m.info || '' };
+  pendingLatLng = { lat: m.lat, lng: m.lng };
+  document.getElementById('identityTitle').textContent = "Modifier l'épingle";
+  nameInput.value = m.name;
+  infoInput.value = m.info || '';
+  identityOverlay.classList.add('active');
+  setTimeout(()=>nameInput.focus(), 200);
+}
+
+map.on('popupopen', (e) => {
+  const el = e.popup.getElement();
+  if(!el) return;
+  const delBtn = el.querySelector('.popup-delete');
+  if(delBtn){
+    delBtn.addEventListener('click', () => {
+      deleteMarker(delBtn.getAttribute('data-id'));
+      map.closePopup();
+    });
+  }
+  const editBtn = el.querySelector('.popup-edit');
+  if(editBtn){
+    editBtn.addEventListener('click', () => {
+      map.closePopup();
+      startEditPin(editBtn.getAttribute('data-id'));
+    });
+  }
+});
+
+// ---------- Realtime sync ----------
+let pinsRef = null;
+function listenToMap(code){
+  if(pinsRef) pinsRef.off();
+  clearAllMarkers();
+  pinsRef = db.ref('maps/' + code + '/pins');
+
+  pinsRef.on('child_added', snap => {
+    const id = snap.key;
+    if(markers.find(x=>x.id===id)) return; // évite doublon
+    const data = snap.val();
+    const m = { id, lat:data.lat, lng:data.lng, name:data.name, info:data.info, initials:data.initials, color:data.color, icon:data.icon || null };
+    markers.push(m);
+    renderMarker(m);
+  });
+
+  pinsRef.on('child_changed', snap => {
+    const id = snap.key;
+    const idx = markers.findIndex(x=>x.id===id);
+    const data = snap.val();
+    const m = { id, lat:data.lat, lng:data.lng, name:data.name, info:data.info, initials:data.initials, color:data.color, icon:data.icon || null };
+    if(idx > -1){
+      map.removeLayer(markers[idx]._marker);
+      markers[idx] = m;
+    } else {
+      markers.push(m);
+    }
+    renderMarker(m);
+  });
+
+  pinsRef.on('child_removed', snap => {
+    const id = snap.key;
+    const idx = markers.findIndex(x=>x.id===id);
+    if(idx > -1){
+      map.removeLayer(markers[idx]._marker);
+      markers.splice(idx,1);
+    }
+  });
+
+  pinsRef.on('value', () => {}, err => {
+    console.error(err);
+    alert("Connexion à la carte partagée impossible. Vérifie tes règles Firebase.");
+  });
+}
+
+// ---------- Landing / map selection ----------
+const landing = document.getElementById('landing');
+const topbar = document.getElementById('topbar');
+const landingError = document.getElementById('landingError');
+const createOverlay = document.getElementById('createOverlay');
+const joinOverlay = document.getElementById('joinOverlay');
+const shareOverlay = document.getElementById('shareOverlay');
+const mapNameInput = document.getElementById('mapNameInput');
+const codeInput = document.getElementById('codeInput');
+const joinError = document.getElementById('joinError');
+const mapNameLabel = document.getElementById('mapNameLabel');
+const mapCodeLabel = document.getElementById('mapCodeLabel');
+
+function enterMap(code, name){
+  currentCode = code;
+  currentMapName = name;
+  localStorage.setItem('carte-epingles-code', code);
+  localStorage.setItem('carte-epingles-name', name);
+  mapNameLabel.textContent = name;
+  mapCodeLabel.textContent = code;
+  landing.classList.add('hidden');
+  topbar.style.display = 'flex';
+  const url = new URL(window.location.href);
+  url.searchParams.set('code', code);
+  window.history.replaceState({}, '', url);
+  listenToMap(code);
+}
+
+function showLanding(){
+  currentCode = null; currentMapName = null;
+  localStorage.removeItem('carte-epingles-code');
+  localStorage.removeItem('carte-epingles-name');
+  if(pinsRef){ pinsRef.off(); pinsRef = null; }
+  clearAllMarkers();
+  topbar.style.display = 'none';
+  landing.classList.remove('hidden');
+  const url = new URL(window.location.href);
+  url.searchParams.delete('code');
+  window.history.replaceState({}, '', url);
+}
+
+document.getElementById('showCreateBtn').addEventListener('click', ()=>{
+  mapNameInput.value = '';
+  createOverlay.classList.add('active');
+  setTimeout(()=>mapNameInput.focus(), 200);
+});
+document.getElementById('createCancelBtn').addEventListener('click', ()=>{
+  createOverlay.classList.remove('active');
+});
+document.getElementById('createConfirmBtn').addEventListener('click', async ()=>{
+  const name = mapNameInput.value.trim();
+  if(!name){ mapNameInput.focus(); return; }
+  const btn = document.getElementById('createConfirmBtn');
+  btn.disabled = true; btn.textContent = 'Création...';
+  try{
+    let code, exists = true, attempts = 0;
+    do{
+      code = generateCode();
+      const snap = await db.ref('maps/' + code).once('value');
+      exists = snap.exists();
+      attempts++;
+    } while(exists && attempts < 8);
+    await db.ref('maps/' + code).set({
+      name, createdAt: firebase.database.ServerValue.TIMESTAMP
+    });
+    createOverlay.classList.remove('active');
+    enterMap(code, name);
+    document.getElementById('shareTitle').textContent = 'Carte créée !';
+    document.getElementById('shareCode').textContent = code;
+    shareOverlay.classList.add('active');
+  }catch(e){
+    landingError.textContent = "Impossible de créer la carte. Vérifie la configuration Firebase.";
+    console.error(e);
+  }finally{
+    btn.disabled = false; btn.textContent = 'Créer';
+  }
+});
+
+document.getElementById('showJoinBtn').addEventListener('click', ()=>{
+  codeInput.value = ''; joinError.textContent = '';
+  joinOverlay.classList.add('active');
+  setTimeout(()=>codeInput.focus(), 200);
+});
+document.getElementById('joinCancelBtn').addEventListener('click', ()=>{
+  joinOverlay.classList.remove('active');
+});
+codeInput.addEventListener('input', ()=>{ codeInput.value = codeInput.value.toUpperCase(); });
+
+async function attemptJoin(code){
+  code = (code || '').trim().toUpperCase();
+  if(code.length !== 6){ joinError.textContent = "Le code doit faire 6 caractères."; return false; }
+  try{
+    const snap = await db.ref('maps/' + code).once('value');
+    if(!snap.exists()){ joinError.textContent = "Ce code ne correspond à aucune carte."; return false; }
+    joinOverlay.classList.remove('active');
+    enterMap(code, snap.val().name);
+    return true;
+  }catch(e){
+    joinError.textContent = "Connexion impossible. Vérifie la configuration Firebase.";
+    console.error(e);
+    return false;
+  }
+}
+document.getElementById('joinConfirmBtn').addEventListener('click', ()=>attemptJoin(codeInput.value));
+
+// Share / info sheet
+document.getElementById('brandBtn').addEventListener('click', ()=>{
+  document.getElementById('shareTitle').textContent = currentMapName || 'Carte';
+  document.getElementById('shareCode').textContent = currentCode || '------';
+  shareOverlay.classList.add('active');
+});
+document.getElementById('shareCloseBtn').addEventListener('click', ()=>{
+  shareOverlay.classList.remove('active');
+});
+document.getElementById('leaveMapBtn').addEventListener('click', ()=>{
+  shareOverlay.classList.remove('active');
+  showLanding();
+});
+document.getElementById('copyCodeBtn').addEventListener('click', ()=>{
+  navigator.clipboard.writeText(currentCode || '').then(()=>{
+    const b = document.getElementById('copyCodeBtn');
+    const old = b.textContent; b.textContent = 'Copié !';
+    setTimeout(()=>b.textContent = old, 1500);
+  });
+});
+document.getElementById('copyLinkBtn').addEventListener('click', ()=>{
+  const url = new URL(window.location.href);
+  url.searchParams.set('code', currentCode || '');
+  navigator.clipboard.writeText(url.toString()).then(()=>{
+    const b = document.getElementById('copyLinkBtn');
+    const old = b.textContent; b.textContent = 'Lien copié !';
+    setTimeout(()=>b.textContent = old, 1500);
+  });
+});
+
+// ---------- Pin creation flow (unchanged UX, writes to Firestore) ----------
+const identityOverlay = document.getElementById('identityOverlay');
+const customizeOverlay = document.getElementById('customizeOverlay');
+const reticle = document.getElementById('reticle');
+const placeBanner = document.getElementById('placeBanner');
+const placeName = document.getElementById('placeName');
+const placeActions = document.getElementById('placeActions');
+const nameInput = document.getElementById('nameInput');
+const infoInput = document.getElementById('infoInput');
+const initialsInput = document.getElementById('initialsInput');
+
+const swatchesEl = document.getElementById('swatches');
+COLORS.forEach((c,i)=>{
+  const el = document.createElement('div');
+  el.className = 'swatch' + (i===0 ? ' selected':'');
+  el.style.background = c;
+  el.dataset.color = c;
+  el.addEventListener('click', ()=>{
+    selectedColor = c;
+    document.querySelectorAll('.swatch').forEach(s=>s.classList.remove('selected'));
+    el.classList.add('selected');
+  });
+  swatchesEl.appendChild(el);
+});
+
+const iconGridEl = document.getElementById('iconGrid');
+function buildIconGrid(){
+  iconGridEl.innerHTML = '';
+  const noneEl = document.createElement('div');
+  noneEl.className = 'icon-choice none-choice' + (selectedIcon === null ? ' selected' : '');
+  noneEl.textContent = 'Initiales';
+  noneEl.addEventListener('click', ()=>{
+    selectedIcon = null;
+    document.querySelectorAll('.icon-choice').forEach(s=>s.classList.remove('selected'));
+    noneEl.classList.add('selected');
+  });
+  iconGridEl.appendChild(noneEl);
+  ICONS.forEach(emoji => {
+    const el = document.createElement('div');
+    el.className = 'icon-choice' + (selectedIcon === emoji ? ' selected' : '');
+    el.textContent = emoji;
+    el.addEventListener('click', ()=>{
+      selectedIcon = emoji;
+      document.querySelectorAll('.icon-choice').forEach(s=>s.classList.remove('selected'));
+      el.classList.add('selected');
+    });
+    iconGridEl.appendChild(el);
+  });
+}
+buildIconGrid();
+
+document.getElementById('addPinBtn').addEventListener('click', ()=>{
+  editingId = null;
+  document.getElementById('identityTitle').textContent = 'Nouvelle épingle';
+  nameInput.value=''; infoInput.value='';
+  identityOverlay.classList.add('active');
+  setTimeout(()=>nameInput.focus(), 200);
+});
+document.getElementById('identityCancelBtn').addEventListener('click', ()=>{
+  identityOverlay.classList.remove('active');
+  editingId = null;
+});
+document.getElementById('identityValidateBtn').addEventListener('click', ()=>{
+  const name = nameInput.value.trim();
+  if(!name){ nameInput.focus(); nameInput.style.borderColor = 'var(--danger)'; return; }
+  pendingIdentity = { name, info: infoInput.value.trim() };
+  identityOverlay.classList.remove('active');
+  if(editingId){
+    openCustomizeForEdit();
+  } else {
+    enterPlacingMode();
+  }
+});
+function openCustomizeForEdit(){
+  const m = markers.find(x => x.id === editingId);
+  document.getElementById('customizeTitle').textContent = "Modifier l'épingle";
+  initialsInput.value = m ? m.initials : '';
+  selectedColor = m ? m.color : COLORS[0];
+  selectedIcon = m ? (m.icon || null) : null;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('selected', s.dataset.color === selectedColor));
+  buildIconGrid();
+  document.getElementById('repositionBtn').style.display = 'inline-block';
+  customizeOverlay.classList.add('active');
+  setTimeout(()=>initialsInput.focus(), 200);
+}
+function enterPlacingMode(){
+  placeName.textContent = pendingIdentity.name;
+  reticle.classList.add('active');
+  placeBanner.classList.add('active');
+  placeActions.classList.add('active');
+}
+function exitPlacingMode(){
+  reticle.classList.remove('active');
+  placeBanner.classList.remove('active');
+  placeActions.classList.remove('active');
+}
+document.getElementById('cancelPlaceBtn').addEventListener('click', ()=>{
+  exitPlacingMode();
+  if(placingForEdit){
+    placingForEdit = false;
+    customizeOverlay.classList.add('active');
+  } else {
+    pendingIdentity = null;
+    editingId = null;
+  }
+});
+document.getElementById('confirmPlaceBtn').addEventListener('click', ()=>{
+  const c = map.getCenter();
+  pendingLatLng = { lat:c.lat, lng:c.lng };
+  exitPlacingMode();
+  if(placingForEdit){
+    placingForEdit = false;
+    customizeOverlay.classList.add('active');
+    return;
+  }
+  initialsInput.value = (pendingIdentity.name.match(/[A-Za-zÀ-ÿ]/g) || []).slice(0,2).join('').toUpperCase();
+  selectedColor = COLORS[0];
+  selectedIcon = null;
+  document.querySelectorAll('.swatch').forEach((s,i)=>s.classList.toggle('selected', i===0));
+  buildIconGrid();
+  document.getElementById('repositionBtn').style.display = 'none';
+  customizeOverlay.classList.add('active');
+  setTimeout(()=>initialsInput.focus(), 200);
+});
+document.getElementById('repositionBtn').addEventListener('click', ()=>{
+  customizeOverlay.classList.remove('active');
+  placingForEdit = true;
+  placeName.textContent = pendingIdentity.name;
+  reticle.classList.add('active');
+  placeBanner.classList.add('active');
+  placeActions.classList.add('active');
+  map.setView([pendingLatLng.lat, pendingLatLng.lng], map.getZoom());
+});
+document.getElementById('customizeCancelBtn').addEventListener('click', ()=>{
+  customizeOverlay.classList.remove('active');
+  pendingIdentity = null; pendingLatLng = null; editingId = null;
+});
+document.getElementById('customizeValidateBtn').addEventListener('click', async ()=>{
+  let initials = initialsInput.value.trim().toUpperCase();
+  if(!initials){ initials = '??'; }
+  initials = initials.slice(0,2);
+  const data = {
+    lat: pendingLatLng.lat, lng: pendingLatLng.lng,
+    name: pendingIdentity.name, info: pendingIdentity.info,
+    initials, color: selectedColor, icon: selectedIcon
+  };
+  const btn = document.getElementById('customizeValidateBtn');
+  btn.disabled = true;
+  try{
+    if(editingId){
+      await db.ref('maps/' + currentCode + '/pins/' + editingId).update(data);
+    } else {
+      data.createdAt = firebase.database.ServerValue.TIMESTAMP;
+      await db.ref('maps/' + currentCode + '/pins').push(data);
+    }
+    // l'affichage se fait via le listener temps réel
+    customizeOverlay.classList.remove('active');
+  }catch(e){
+    alert("Impossible d'enregistrer l'épingle : " + e.message);
+    console.error(e);
+  }finally{
+    btn.disabled = false;
+    pendingIdentity = null; pendingLatLng = null; editingId = null;
+  }
+});
+initialsInput.addEventListener('input', ()=>{
+  initialsInput.value = initialsInput.value.toUpperCase().slice(0,2);
+});
+
+// ---------- Init : auto-join via ?code= in URL, or restore last session ----------
+(function init(){
+  const params = new URLSearchParams(window.location.search);
+  const urlCode = params.get('code');
+  const savedCode = localStorage.getItem('carte-epingles-code');
+  const savedName = localStorage.getItem('carte-epingles-name');
+
+  if(urlCode){
+    joinOverlay.classList.remove('active');
+    attemptJoin(urlCode);
+  } else if(savedCode && savedName){
+    enterMap(savedCode, savedName);
+  }
+  // sinon : l'écran d'accueil reste affiché
+
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos => map.setView([pos.coords.latitude, pos.coords.longitude], 12),
+      () => {}
+    );
+  }
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  }
+})();
+</script>
+</body>
+</html>
 
